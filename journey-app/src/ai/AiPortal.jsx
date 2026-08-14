@@ -59,26 +59,36 @@ export default function AiPortal() {
   };
 
   // Point the store at the right workspace before anything renders: cloud
-  // sync for email accounts, browser-local seeded demo otherwise. Plan
-  // refreshes from the server on every load, so a founder upgrade lands
-  // without the user doing anything.
+  // sync for email accounts, browser-local seeded demo otherwise.
+  //
+  // Persisted sessions are VALIDATED against the server first: a token the
+  // server rejects (secret rotation, expiry) must drop the user cleanly to
+  // the login screen — never a broken shell where every call 401s. Network
+  // failures keep the session (offline-first); only an explicit rejection
+  // logs out. Plan also refreshes here, so founder upgrades land silently.
   useEffect(() => {
     let live = true;
     (async () => {
-      if (session?.mode === 'user') {
-        await enableUserSync(session.token, session.user);
-        ai.whoami(session.token).then((r) => {
-          if (live && r.plan && r.plan !== session.plan) {
+      if (session) {
+        try {
+          const r = await ai.whoami(session.token);
+          if (live && session.mode === 'user' && r.plan && r.plan !== session.plan) {
             const next = { ...session, plan: r.plan };
             try { localStorage.setItem(AUTH_KEY, JSON.stringify(next)); } catch { /* ignore */ }
             setSession(next);
+            return; // effect re-runs with the updated session
           }
-        }).catch(() => { /* offline — keep the cached plan */ });
-      } else disableUserSync();
+        } catch (e) {
+          if (live && /login required/i.test(e.message || '')) { setAuth(null); return; }
+          // other errors: offline etc. — proceed with the cached session
+        }
+      }
+      if (session?.mode === 'user') await enableUserSync(session.token, session.user);
+      else disableUserSync();
       if (live) setReady(true);
     })();
     return () => { live = false; };
-  }, [session?.token, session?.mode]); // eslint-disable-line
+  }, [session?.token, session?.mode, session?.plan]); // eslint-disable-line
 
   if (location.pathname.includes('/verify')) {
     return <div className="fs-root" style={themeVars(ws)}><VerifyScreen onAuth={setAuth} /></div>;
