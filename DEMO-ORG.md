@@ -7,15 +7,26 @@ Their stated problem: *"we can't track projects."* Lead with that, not with the 
 
 ---
 
-## 1 · The problem, on one screen (90s)
+## 1 · The problem, on one screen (2 min)
 
-Open **Timelines**.
+Open **Timelines** — it opens on the **Roadmap**.
 
-> "This is every project across every product. Four delivered, six in flight, two need attention. Grouped by the month they went live — and the ones ahead show a countdown."
+> "This is the whole book of work on one timeline. Swimlanes by product, today marked, and the fill inside each bar is real progress — derived from delivery work and the plan, never typed by anyone. Four delivered, six in flight."
 
-Point at **EMI & Payment Flexibility — At risk, in 27 days**.
+Point at the amber **EMI & Payment Flexibility** bar sitting past today.
 
-> "Today that answer lives in someone's spreadsheet, three Jira boards and a status call. Here it's one screen, and it's derived, not typed."
+> "That one's at risk and it's a P0."
+
+**Click the bar** — highlights drawer opens.
+
+> "Status, go-live, 54% complete, the open risk in plain words, what's coming next, and the north-star metric. No one had to prepare this."
+
+Then show the levers:
+- **Filter** by priority `P0` → "just the critical ones"
+- Switch to **List** → change a priority dropdown → "this is the decision this room actually makes — and it's one click"
+- **Export ▾ → Executive status report** → prints as a PDF one-pager grouped into *Needs a decision / In flight / Delivered*
+
+> "Today that answer lives in a spreadsheet, three Jira boards and a status call. Here it's one screen, and every number traces to a record."
 
 ## 2 · What a project actually is (2 min)
 
