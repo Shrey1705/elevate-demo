@@ -12,6 +12,7 @@ import {
   generateAc, edgeCasesFor, downloadText, shortDate
 } from './workspace';
 import { TypeIcon } from './icons';
+import Attachments from './Attachments';
 import TraceRail, { StaleBanner } from './TraceRail';
 
 const EMPTY_HINT = {
@@ -220,6 +221,7 @@ export default function ArtifactPage({ type }) {
           )}
           {type === 'fr' && <p className="proseline">{doc.description}</p>}
           {type === 'test' && <pre className="gherkin" style={{ marginTop: 14 }}>{doc.gherkin}</pre>}
+          <Attachments pid={pid} type={type} doc={doc} />
         </article>
 
         <TraceRail project={project} type={type} doc={doc} actions={actions} />

@@ -10,6 +10,7 @@ import {
   childrenOf, pdnFromAnalysis, brdCompletenessReview, shortDate
 } from './workspace';
 import { TypeIcon } from './icons';
+import Attachments from './Attachments';
 import TraceRail from './TraceRail';
 
 const STATUSES = ['Draft', 'In review', 'Approved'];
@@ -183,6 +184,7 @@ export default function BrdsPage() {
             </label>
           ))}
           {err && <p className="error">{err}</p>}
+          <Attachments pid={pid} type="brd" doc={doc} />
         </article>
 
         <TraceRail project={project} type="brd" doc={doc} actions={actions} extra={versionsRail} />

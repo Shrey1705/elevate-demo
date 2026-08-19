@@ -64,6 +64,8 @@ function migrateState(s) {
     for (const b of p.brds || []) if (b.decisionId === undefined) b.decisionId = null;
     // Tracker / performance / review layers.
     if (!p.tracker) p.tracker = emptyTracker();
+    if (!p.tracker.priority) p.tracker.priority = 'P2';
+    if (p.tracker.startDate === undefined) p.tracker.startDate = '';
     if (!p.metrics) p.metrics = [];
     if (!p.reviews) p.reviews = [];
   }
@@ -173,10 +175,121 @@ export const STATUS_LABEL = {
   'on-track': 'On track', 'at-risk': 'At risk', 'delayed': 'Delayed', live: 'Live', 'on-hold': 'On hold'
 };
 
+// Priority is the lever a stakeholder actually pulls on the Timelines page —
+// so it's a first-class field, editable inline, and drives sort order.
+export const PRIORITIES = {
+  P0: { label: 'P0 · Critical', tint: '#ff453a', rank: 0 },
+  P1: { label: 'P1 · High', tint: '#c9a227', rank: 1 },
+  P2: { label: 'P2 · Medium', tint: '#0a84ff', rank: 2 },
+  P3: { label: 'P3 · Low', tint: '#8e8e93', rank: 3 }
+};
+
 export const emptyTracker = () => ({
-  description: '', status: 'on-track', goLive: '', owner: 'owner',
-  events: [], versions: [], visibility: 'private', sharedWith: []
+  description: '', status: 'on-track', startDate: '', goLive: '', owner: 'owner',
+  priority: 'P2', events: [], versions: [], visibility: 'private', sharedWith: []
 });
+
+// Progress is DERIVED, never typed. Three signals in order of trust:
+// finished delivery work > lifecycle stages reached > events already past.
+// A stakeholder can trust the bar because nobody can inflate it by hand.
+export function projectProgress(project) {
+  const t = project.tracker || {};
+  if (t.status === 'live') return 100;
+
+  // Health discounts the estimate — a delayed project is not as far along as
+  // its calendar suggests, and nothing unshipped is ever shown as complete.
+  const factor = { delayed: 0.85, 'on-hold': 0.8, 'at-risk': 0.92 }[t.status] ?? 1;
+  const cap = (n) => Math.max(0, Math.min(92, Math.round(n * factor)));
+
+  const stories = project.stories || [];
+  if (stories.length) {
+    // Real delivery work exists — trust it over the calendar.
+    const done = stories.filter((s) => (s.status || 'todo') === 'done').length;
+    const { done: stages } = stageInfo(project);
+    const stageScore = ['discover', 'define', 'build', 'launch', 'measure'].filter((s) => stages[s]).length / 5;
+    return cap(((done / stories.length) * 0.6 + stageScore * 0.4) * 100);
+  }
+
+  // No delivery chain yet: elapsed time against the plan is the honest
+  // signal. Recorded events only cover what has happened, never what remains,
+  // so counting them alone would read 100% the moment the log is up to date.
+  const events = (t.events || []).map((e) => e.date).filter(Boolean).sort();
+  const start = t.startDate || events[0];
+  const end = t.goLive;
+  if (start && end && end > start) {
+    const s = new Date(start).getTime(), e = new Date(end).getTime(), n = Date.now();
+    return cap(((n - s) / (e - s)) * 100);
+  }
+  return 0;
+}
+
+// The window the roadmap spans, padded to whole months so the header reads
+// cleanly. Falls back to a sensible band when dates are sparse.
+export function roadmapRange(rows) {
+  const dates = rows.flatMap((r) => [r.startDate, r.goLive].filter(Boolean)).sort();
+  const first = dates[0] || todayISO();
+  const last = dates[dates.length - 1] || todayISO();
+  const start = new Date(first + 'T00:00:00'); start.setDate(1);
+  const end = new Date(last + 'T00:00:00'); end.setMonth(end.getMonth() + 1, 0);
+  // always show at least six months so a short book of work still looks like a roadmap
+  if ((end - start) / 86400e3 < 180) end.setMonth(start.getMonth() + 6, 0);
+  const months = [];
+  const cur = new Date(start);
+  while (cur <= end) { months.push(cur.toISOString().slice(0, 7)); cur.setMonth(cur.getMonth() + 1); }
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10), months };
+}
+export const pctBetween = (range, date) => {
+  const s = new Date(range.start).getTime(), e = new Date(range.end).getTime();
+  const d = new Date(date).getTime();
+  return Math.max(0, Math.min(100, ((d - s) / (e - s)) * 100));
+};
+
+// ---- CSV + report generation ----
+const csvCell = (v) => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+export const toCSV = (rows, columns) =>
+  [columns.map((c) => csvCell(c.label)).join(','), ...rows.map((r) => columns.map((c) => csvCell(c.get(r))).join(','))].join('\n');
+
+export function downloadFile(filename, content, mime = 'text/csv;charset=utf-8') {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---- attachments (BRD / PDN / tests / any artifact) ----
+// Metadata is always kept; text-ish files under 200KB also keep their content
+// so the AI can actually read them. Binary office files are registered with
+// their name, type and size — honest about what's stored.
+export const TEXTY = /\.(txt|md|csv|json|log|yaml|yml)$/i;
+export function attachmentFrom(file, content) {
+  return {
+    id: uid(), name: file.name, size: file.size, type: file.type || 'application/octet-stream',
+    createdAt: now(), content: content || '', hasContent: !!content
+  };
+}
+export function addAttachment(ws, pid, type, docId, attachment) {
+  return {
+    ...ws,
+    projects: ws.projects.map((p) => p.id !== pid ? p : {
+      ...p,
+      [TYPES[type].key]: (p[TYPES[type].key] || []).map((d) => (d.id === docId ? { ...d, attachments: [...(d.attachments || []), attachment] } : d))
+    })
+  };
+}
+export function removeAttachment(ws, pid, type, docId, aid) {
+  return {
+    ...ws,
+    projects: ws.projects.map((p) => p.id !== pid ? p : {
+      ...p,
+      [TYPES[type].key]: (p[TYPES[type].key] || []).map((d) => (d.id === docId ? { ...d, attachments: (d.attachments || []).filter((a) => a.id !== aid) } : d))
+    })
+  };
+}
+export const prettySize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n > 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 export const trackerOf = (project) => project?.tracker || emptyTracker();
 export const sortedEvents = (project) =>
   [...(trackerOf(project).events || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
@@ -213,12 +326,76 @@ export function portfolioRows(ws) {
     const t = trackerOf(p);
     const rel = (p.releases || []).slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0];
     const goLive = t.goLive || (rel?.date && rel.date !== '—' ? rel.date : '');
+    const events = (t.events || []).map((e) => e.date).filter(Boolean).sort();
+    // Start date falls back to the first recorded event, then project creation:
+    // a roadmap bar should never be missing just because nobody typed a date.
+    const startDate = t.startDate || events[0] || (p.createdAt || '').slice(0, 10) || goLive;
+    const risks = (t.events || []).filter((e) => e.type === 'risk').sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     return {
-      project: p, tracker: t, goLive,
+      project: p, tracker: t, goLive, startDate,
+      priority: t.priority || 'P2',
+      progress: projectProgress(p),
       shipped: !!goLive && goLive <= todayISO(),
+      latestRisk: risks.length ? risks[risks.length - 1] : null,
+      owner: (ws.team?.members || []).find((m) => m.id === t.owner)?.email || 'unassigned',
       product: (ws.products || []).find((x) => x.id === p.productId)?.name || 'All products'
     };
   });
+}
+
+// Columns shared by the on-screen table and the CSV export, so what a
+// stakeholder sees is exactly what lands in their spreadsheet.
+export const TIMELINE_COLUMNS = [
+  { label: 'Project', get: (r) => r.project.name },
+  { label: 'Product', get: (r) => r.product },
+  { label: 'Priority', get: (r) => r.priority },
+  { label: 'Status', get: (r) => STATUS_LABEL[r.tracker.status] || r.tracker.status },
+  { label: 'Progress %', get: (r) => r.progress },
+  { label: 'Start', get: (r) => r.startDate },
+  { label: 'Go-live', get: (r) => r.goLive },
+  { label: 'Owner', get: (r) => r.owner },
+  { label: 'Visibility', get: (r) => r.tracker.visibility },
+  { label: 'Events', get: (r) => (r.tracker.events || []).length },
+  { label: 'Latest risk', get: (r) => r.latestRisk?.note || '' },
+  { label: 'Description', get: (r) => r.tracker.description }
+];
+
+// A single project's full record, flattened for a progress report.
+export function progressReportCSV(ws, row) {
+  const p = row.project;
+  const lines = [];
+  lines.push(toCSV([row], TIMELINE_COLUMNS));
+  lines.push('');
+  lines.push('EVENT HISTORY');
+  lines.push(toCSV(sortedEvents(p), [
+    { label: 'Date', get: (e) => e.date },
+    { label: 'Type', get: (e) => EVENT_TYPES[e.type]?.label || e.type },
+    { label: 'Event', get: (e) => e.note },
+    { label: 'Source', get: (e) => (e.source === 'ai' ? 'Generated from documents' : 'Manual') }
+  ]));
+  const metrics = metricsOf(p);
+  if (metrics.length) {
+    lines.push('');
+    lines.push('NORTH-STAR METRICS');
+    lines.push(toCSV(metrics.flatMap((m) => (m.points || []).map((pt) => ({ m, pt }))), [
+      { label: 'Metric', get: (x) => x.m.name },
+      { label: 'Target', get: (x) => `${x.m.target}${x.m.unit}` },
+      { label: 'Baseline', get: (x) => `${x.m.baseline}${x.m.unit}` },
+      { label: 'Date', get: (x) => x.pt.date },
+      { label: 'Value', get: (x) => x.pt.value }
+    ]));
+  }
+  if ((p.stories || []).length) {
+    lines.push('');
+    lines.push('DELIVERY');
+    lines.push(toCSV(p.stories, [
+      { label: 'Story', get: (s) => s.title },
+      { label: 'Status', get: (s) => s.status || 'todo' },
+      { label: 'Points', get: (s) => s.points || '' },
+      { label: 'Component', get: (s) => s.component || '' }
+    ]));
+  }
+  return lines.join('\n');
 }
 export const visibleToMe = (ws, row) =>
   roleCap(myRole(ws)) === 'admin' || row.tracker.visibility === 'published' || myRole(ws) === 'pm';
@@ -801,7 +978,7 @@ const day = (offset) => new Date(Date.now() + offset * 86400e3).toISOString().sl
 function portfolioSeed() {
   const rows = [
     {
-      id: 'proj-claims-instant', name: 'Instant Claim Settlement', productId: 'prod-claims', status: 'live', goLive: day(-97), owner: 'm-anita', visibility: 'published',
+      id: 'proj-claims-instant', priority: 'P1', start: -180, name: 'Instant Claim Settlement', productId: 'prod-claims', status: 'live', goLive: day(-97), owner: 'm-anita', visibility: 'published',
       description: 'Auto-adjudicate low-value cashless claims under ₹25,000 within 60 seconds, with a rules-based fraud screen and a manual queue for exceptions.',
       events: [
         [-180, 'kickoff', 'Kick-off with Claims Ops and Actuarial'],
@@ -816,7 +993,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-wa-renewals', name: 'WhatsApp Renewal Reminders', productId: 'prod-retail', status: 'live', goLive: day(-59), owner: 'm-anita', visibility: 'published',
+      id: 'proj-wa-renewals', priority: 'P2', start: -140, name: 'WhatsApp Renewal Reminders', productId: 'prod-retail', status: 'live', goLive: day(-59), owner: 'm-anita', visibility: 'published',
       description: 'Renewal nudges over WhatsApp with a one-tap payment link, replacing the email-only reminder chain that customers were ignoring.',
       events: [
         [-140, 'kickoff', 'Renewals leakage analysis presented to Distribution'],
@@ -830,7 +1007,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-group-onboard', name: 'Corporate Group Onboarding Portal', productId: 'prod-group', status: 'live', goLive: day(-40), owner: 'm-sana', visibility: 'published',
+      id: 'proj-group-onboard', priority: 'P1', start: -165, name: 'Corporate Group Onboarding Portal', productId: 'prod-group', status: 'live', goLive: day(-40), owner: 'm-sana', visibility: 'published',
       description: 'Self-serve portal for HR teams to upload member rosters, validate data and activate group cover without an account manager in the loop.',
       events: [
         [-165, 'kickoff', 'Three corporate clients interviewed on the current onboarding pain'],
@@ -845,7 +1022,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-cashless', name: 'Cashless Hospital Network Expansion', productId: 'prod-claims', status: 'live', goLive: day(-18), owner: 'm-vikram', visibility: 'published',
+      id: 'proj-cashless', priority: 'P2', start: -120, name: 'Cashless Hospital Network Expansion', productId: 'prod-claims', status: 'live', goLive: day(-18), owner: 'm-vikram', visibility: 'published',
       description: 'Add 1,200 hospitals across tier-2 cities to the cashless network, with automated empanelment checks and tariff ingestion.',
       events: [
         [-120, 'kickoff', 'Network gap analysis across 40 tier-2 cities'],
@@ -858,7 +1035,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-emi', name: 'EMI & Payment Flexibility', productId: 'prod-retail', status: 'at-risk', goLive: day(27), owner: 'owner', visibility: 'published',
+      id: 'proj-emi', priority: 'P0', start: -38, name: 'EMI & Payment Flexibility', productId: 'prod-retail', status: 'at-risk', goLive: day(27), owner: 'owner', visibility: 'published',
       description: 'Offer interest-free monthly premium instalments alongside annual payment, including default handling that pauses rather than cancels cover.',
       events: [
         [-38, 'kickoff', 'Affordability drop-off identified in the quote funnel'],
@@ -871,7 +1048,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-telemed', name: 'Telemedicine Add-on', productId: 'prod-retail', status: 'on-track', goLive: day(49), owner: 'm-anita', visibility: 'published',
+      id: 'proj-telemed', priority: 'P2', start: -24, name: 'Telemedicine Add-on', productId: 'prod-retail', status: 'on-track', goLive: day(49), owner: 'm-anita', visibility: 'published',
       description: 'Unlimited teleconsultation as an optional add-on, bundled with a partner network and priced from utilisation modelling.',
       events: [
         [-24, 'kickoff', 'Partner shortlist narrowed to two teleconsultation providers'],
@@ -882,7 +1059,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-doc-digital', name: 'Policy Document Digitisation', productId: 'prod-platform', status: 'delayed', goLive: day(43), owner: 'm-sana', visibility: 'published',
+      id: 'proj-doc-digital', priority: 'P1', start: -88, name: 'Policy Document Digitisation', productId: 'prod-platform', status: 'delayed', goLive: day(43), owner: 'm-sana', visibility: 'published',
       description: 'Replace PDF policy packs with a structured document service so policy data is queryable rather than trapped in attachments.',
       events: [
         [-88, 'kickoff', 'Document estate audit — 2.1M policy PDFs in scope'],
@@ -895,7 +1072,7 @@ function portfolioSeed() {
       ]
     },
     {
-      id: 'proj-fraud', name: 'Fraud Detection Model v2', productId: 'prod-platform', status: 'on-hold', goLive: day(72), owner: 'm-vikram', visibility: 'private',
+      id: 'proj-fraud', priority: 'P3', start: -54, name: 'Fraud Detection Model v2', productId: 'prod-platform', status: 'on-hold', goLive: day(72), owner: 'm-vikram', visibility: 'private',
       description: 'Second-generation fraud scoring on claims, moving from static rules to a supervised model with human review on the boundary.',
       events: [
         [-54, 'kickoff', 'Model v1 false-positive review with the SIU team'],
@@ -911,6 +1088,7 @@ function portfolioSeed() {
     id: r.id, name: r.name, productId: r.productId, about: r.description, createdAt: now(),
     tracker: {
       description: r.description, status: r.status, goLive: r.goLive, owner: r.owner,
+      startDate: day(r.start), priority: r.priority,
       visibility: r.visibility, sharedWith: [],
       events: r.events.map(([off, type, note]) => ({ id: uid(), date: day(off), type, note, createdAt: now(), source: 'seed' })),
       versions: []
@@ -1007,6 +1185,7 @@ function seedState() {
         tracker: {
           description: 'Open a \u20b92 crore sum-insured band for HNI customers without breaking underwriting limits. Requires a certified actuarial rate and a medical-test grid for the new band.',
           status: 'on-track', goLive: day(12), owner: 'owner', visibility: 'published', sharedWith: [],
+          startDate: day(-64), priority: 'P0',
           events: [
             { id: uid(), date: day(-64), type: 'kickoff', note: 'Lost-quote analysis showed 38 abandoned high-premium quotes in Q1', createdAt: now(), source: 'seed' },
             { id: uid(), date: day(-51), type: 'decision', note: 'Approved the \u20b92 crore band, gated on actuarial rates (62% confidence)', createdAt: now(), source: 'seed' },
@@ -1084,6 +1263,7 @@ function seedState() {
         tracker: {
           description: 'Threshold-based PAN verification and mandatory nominee capture, driven by the regulator circular. Applies across every product line.',
           status: 'on-track', goLive: day(35), owner: 'm-compliance', visibility: 'private', sharedWith: [],
+          startDate: day(-20), priority: 'P1',
           events: [
             { id: uid(), date: day(-20), type: 'kickoff', note: 'Regulator circular reviewed with Compliance', createdAt: now(), source: 'seed' },
             { id: uid(), date: day(-8), type: 'milestone', note: 'Draft BRD created for threshold-based PAN verification', createdAt: now(), source: 'seed' }

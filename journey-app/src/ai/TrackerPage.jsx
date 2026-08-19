@@ -10,8 +10,42 @@ import { I } from './icons';
 import {
   useWS, mutate, uid, now, shortDate, todayISO, findProject, can,
   trackerOf, sortedEvents, updateTracker, addEvent, updateEvent, removeEvent, snapshotTracker,
-  EVENT_TYPES, TRACKER_STATUS, STATUS_LABEL
+  EVENT_TYPES, TRACKER_STATUS, STATUS_LABEL, PRIORITIES, portfolioRows,
+  projectProgress, roadmapRange, pctBetween, progressReportCSV, downloadFile
 } from './workspace';
+
+// This project's own roadmap: where it sits between start and go-live, with
+// every milestone placed on the line and progress filled behind it.
+function ProjectRoadmap({ project, tracker }) {
+  const start = tracker.startDate || sortedEvents(project)[0]?.date || todayISO();
+  const end = tracker.goLive || start;
+  const range = roadmapRange([{ startDate: start, goLive: end }]);
+  const progress = projectProgress(project);
+  const events = sortedEvents(project).filter((e) => e.date);
+  return (
+    <div className="prm">
+      <div className="prm-head">
+        <span>{shortDate(start + 'T00:00:00')}</span>
+        <b>{progress}% complete</b>
+        <span>{tracker.goLive ? shortDate(tracker.goLive + 'T00:00:00') : 'no go-live set'}</span>
+      </div>
+      <div className="prm-track">
+        <span className="prm-fill" style={{ width: `${progress}%` }} />
+        <span className="prm-today" style={{ left: `${pctBetween(range, todayISO())}%` }} />
+        {events.map((e) => (
+          <span key={e.id} className={'prm-mile' + (e.date > todayISO() ? ' future' : '')}
+            style={{ left: `${pctBetween(range, e.date)}%`, background: EVENT_TYPES[e.type]?.tint }}
+            title={`${shortDate(e.date + 'T00:00:00')} — ${e.note}`} />
+        ))}
+      </div>
+      <div className="prm-legend">
+        {Object.entries(EVENT_TYPES).filter(([k]) => events.some((e) => e.type === k)).map(([k, v]) => (
+          <span key={k}><i style={{ background: v.tint }} />{v.label}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function TrackerPage() {
   const { pid } = useParams();
@@ -70,8 +104,16 @@ export default function TrackerPage() {
           <h1 className="doch1" style={{ marginBottom: 2 }}>{project.name}</h1>
           <p className="docsub" style={{ margin: 0 }}>Tracker · {(ws.products || []).find((p) => p.id === project.productId)?.name || 'All products'}</p>
         </div>
-        <span className={'trkbadge s-' + t.status}>{STATUS_LABEL[t.status]}</span>
+        <span className="trkheadright">
+          <span className={'trkbadge s-' + t.status}>{STATUS_LABEL[t.status]}</span>
+          <button className="fs-linkbtn" onClick={() => {
+            const row = portfolioRows(ws).find((r) => r.project.id === pid);
+            if (row) downloadFile(`${project.name.replace(/\W+/g, '-').toLowerCase()}-progress-${todayISO()}.csv`, progressReportCSV(ws, row));
+          }}>Download progress report</button>
+        </span>
       </div>
+
+      <ProjectRoadmap project={project} tracker={t} />
 
       <div className="trkfields">
         <label>Status
@@ -79,8 +121,16 @@ export default function TrackerPage() {
             {TRACKER_STATUS.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
           </select>
         </label>
+        <label>Start
+          <input type="date" value={t.startDate || ''} disabled={!editable} onChange={(e) => patch({ startDate: e.target.value })} />
+        </label>
         <label>Go-live
           <input type="date" value={t.goLive || ''} disabled={!editable} onChange={(e) => patch({ goLive: e.target.value })} />
+        </label>
+        <label>Priority
+          <select value={t.priority || 'P2'} disabled={!editable} onChange={(e) => patch({ priority: e.target.value })}>
+            {Object.entries(PRIORITIES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
         </label>
         <label>Owner
           <select value={t.owner || 'owner'} disabled={!editable} onChange={(e) => patch({ owner: e.target.value })}>
