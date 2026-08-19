@@ -107,7 +107,7 @@ export default function AiPortal() {
         <Routes>
           <Route path="/" element={<Shell />}>
             <Route index element={<ChatHome />} />
-            <Route path="portfolio" element={<PortfolioPage />} />
+            <Route path="timelines" element={<PortfolioPage />} />
             <Route path="reviews" element={<ReviewQueuePage />} />
             <Route path="data" element={<DataPage />} />
             <Route path="board" element={<BoardPage />} />
@@ -514,7 +514,7 @@ function Sidebar({ project, open, onClose }) {
         {/* Workspace views: cross-product, each gated by the module matrix. */}
         <Group id="wsviews" label="Workspace">
           {[
-            { to: '/ai/portfolio', glyph: 'target', label: 'Portfolio', mod: 'portfolio' },
+            { to: '/ai/timelines', glyph: 'target', label: 'Timelines', mod: 'portfolio' },
             { to: '/ai/reviews', glyph: 'check', label: 'Reviews', mod: 'reviews', badge: reviewCount },
             { to: '/ai/board', glyph: 'checks', label: 'Sprint Board', mod: 'execution' },
             { to: '/ai/data', glyph: 'archive', label: 'Connected Data', mod: 'data' },

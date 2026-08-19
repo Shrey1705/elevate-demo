@@ -118,7 +118,7 @@ export const roleLabel = (role) => ROLES[role]?.label || role;
 // The product as an org would buy it: named modules, each with the
 // functionalities inside it, each exposable per role.
 export const MODULES = {
-  portfolio: { label: 'Portfolio & Tracker', glyph: 'target', fns: ['Go-live dashboard', 'Project trackers', 'Event timeline', 'Versions', 'Publish controls'] },
+  portfolio: { label: 'Timelines & Tracker', glyph: 'target', fns: ['Go-live dashboard', 'Project trackers', 'Event timeline', 'Versions', 'Publish controls'] },
   ask: { label: 'Ask (AI copilot)', glyph: 'message', fns: ['Chat over history', 'Grounded citations', 'Local model'] },
   decisions: { label: 'Decisions', glyph: 'target', fns: ['Decision record', 'Evidence', 'Confidence', 'Review loop', 'Action items'] },
   knowledge: { label: 'Knowledge', glyph: 'book', fns: ['Research', 'Library', 'Conversations', 'Inbox capture'] },

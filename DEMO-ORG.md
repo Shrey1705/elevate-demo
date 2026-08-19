@@ -9,7 +9,7 @@ Their stated problem: *"we can't track projects."* Lead with that, not with the 
 
 ## 1 · The problem, on one screen (90s)
 
-Open **Portfolio**.
+Open **Timelines**.
 
 > "This is every project across every product. Four delivered, six in flight, two need attention. Grouped by the month they went live — and the ones ahead show a countdown."
 
@@ -81,7 +81,7 @@ Click **project_registry**, then group **policies** by `plan_code`.
 
 ## 8 · Close (30s)
 
-> "Three things I'd want your reaction to: does the portfolio view answer the tracking problem; is the module/role split right for how we're organised; and is 'why did we build this' worth having in twelve months."
+> "Three things I'd want your reaction to: does the Timelines view answer the tracking problem; is the module/role split right for how we're organised; and is 'why did we build this' worth having in twelve months."
 
 ---
 

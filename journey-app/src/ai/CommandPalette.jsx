@@ -9,6 +9,9 @@ import { useWS, mutate, mergedProject, ROUTE_OF, DECISION_STATUS_LABEL } from '.
 import { startCoach } from './DemoCoach';
 
 const VIEWS = [
+  { label: 'Timelines — portfolio & go-lives', to: '/ai/timelines', glyph: 'target' },
+  { label: 'Reviews & approvals', to: '/ai/reviews', glyph: 'check' },
+  { label: 'Connected Data (EDW)', to: '/ai/data', glyph: 'archive' },
   { label: 'Sprint Board', to: '/ai/board', glyph: 'checks' },
   { label: 'Signals — funnel & insights', to: '/ai/signals', glyph: 'scatter' },
   { label: 'Knowledge Graph', to: '/ai/graph', glyph: 'network' },

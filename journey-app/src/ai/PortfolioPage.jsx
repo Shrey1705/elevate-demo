@@ -1,4 +1,4 @@
-// Portfolio — the answer to "what went live, and what's coming?" in one
+// Timelines — the answer to "what went live, and what's coming?" in one
 // screen. Delivered work groups backwards by month, in-flight work forwards,
 // each row carrying the status, owner and product a review meeting asks for.
 // Click any row to open its tracker.
@@ -36,7 +36,7 @@ export default function PortfolioPage() {
 
   return (
     <div className="docwrap">
-      <h1 className="doch1">Portfolio</h1>
+      <h1 className="doch1">Timelines</h1>
       <p className="docsub">
         Every project across every product — what shipped and when, what's next, and what needs attention.
         You're viewing as <b>{roleLabel(myRole(ws))}</b>.
