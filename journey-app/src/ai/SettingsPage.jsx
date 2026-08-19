@@ -6,13 +6,17 @@ import { useWorkspace } from './AiPortal';
 import { detectOllama } from '../lib/ollama';
 import { clearIndex } from './rag';
 import { I } from './icons';
-import { useWS, mutate, uid, usingLocal, DEFAULT_THEME, ROLES, myRole, can, planOf, PLAN_LIMITS, PLAN_LABEL, usageOf } from './workspace';
+import {
+  useWS, mutate, uid, usingLocal, DEFAULT_THEME, ROLES, ROLE_IDS, roleLabel, myRole, can,
+  planOf, PLAN_LIMITS, PLAN_LABEL, usageOf, MODULES, DEFAULT_ROLE_MODULES
+} from './workspace';
 
 const TABS = [
   { id: 'Connected Systems', glyph: 'plug', admin: true },
   { id: 'Model Hub', glyph: 'cpu', admin: true },
   { id: 'Integrations', glyph: 'network', admin: true },
   { id: 'Team & Roles', glyph: 'user' },
+  { id: 'Module Access', glyph: 'lock' },
   { id: 'Plan & Usage', glyph: 'card' },
   { id: 'Appearance', glyph: 'sliders' },
   { id: 'API & Webhooks', glyph: 'code', admin: true }
@@ -64,81 +68,113 @@ function PlanTab() {
 function LockedTab({ role }) {
   return (
     <div>
-      <h3 className="ws-h3">Admin access required</h3>
-      <p className="hint">You're viewing the workspace as <b>{role}</b>. Connected systems, models, integrations and API access are managed by workspace admins — {ROLES[role].toLowerCase()}</p>
-      <p className="hint">Switch back to admin in <b>Team & Roles</b>.</p>
+      <h3 className="ws-h3">Not available for your role</h3>
+      <p className="hint">You're working as <b>{roleLabel(role)}</b>. {ROLES[role]?.desc}</p>
+      <p className="hint">Switch role from the picker at the top of the sidebar, or ask an admin to grant this module in <b>Module Access</b>.</p>
     </div>
   );
 }
 
+// Team: people hold several roles at once (a Director who also PMs a
+// product), and switch between them in the UI without logging out.
 function TeamTab() {
   const ws = useWS();
-  const team = ws.team || { members: [], viewAs: null };
-  const role = myRole(ws);
-  const isAdmin = role === 'admin';
+  const team = ws.team || { members: [], activeRole: 'admin' };
+  const isAdmin = can(ws, 'admin');
   const [email, setEmail] = useState('');
-  const [newRole, setNewRole] = useState('editor');
 
   const patchTeam = (p) => mutate((w) => ({ ...w, team: { ...(w.team || team), ...p } }));
   const addMember = () => {
     const e = email.trim().toLowerCase();
     if (!e.includes('@')) return;
-    patchTeam({ members: [...team.members, { id: uid(), email: e, role: newRole }] });
+    patchTeam({ members: [...team.members, { id: uid(), email: e, roles: ['viewer'] }] });
     setEmail('');
   };
-  const setMemberRole = (id, r) => patchTeam({ members: team.members.map((m) => (m.id === id ? { ...m, role: r } : m)) });
+  const toggleRole = (id, r) => patchTeam({
+    members: team.members.map((m) => {
+      if (m.id !== id) return m;
+      const roles = m.roles.includes(r) ? m.roles.filter((x) => x !== r) : [...m.roles, r];
+      return { ...m, roles: roles.length ? roles : ['viewer'] };
+    })
+  });
   const remove = (id) => patchTeam({ members: team.members.filter((m) => m.id !== id) });
 
   return (
     <div>
-      <h3 className="ws-h3">Preview access levels</h3>
-      <p className="hint">See exactly what each role gets — settings lock, playbooks and edits disable, documents stay readable. This is the access contract members receive when team workspaces ship.</p>
-      <div className="roleswitch">
-        {Object.keys(ROLES).map((r) => (
-          <button key={r} className={'undertab' + (role === r ? ' on' : '')}
-            onClick={() => patchTeam({ viewAs: r === 'admin' ? null : r })}>
-            {r.charAt(0).toUpperCase() + r.slice(1)}
-          </button>
-        ))}
-      </div>
-      <p className="hint">{ROLES[role]}</p>
-
-      <h3 className="ws-h3" style={{ marginTop: 26 }}>Members</h3>
-      <table className="dashtable">
-        <thead><tr><th>Member</th><th>Role</th><th /></tr></thead>
+      <h3 className="ws-h3">People &amp; roles</h3>
+      <p className="hint">Everyone can hold more than one role. Tick every role a person performs — they choose which one they're working as from the sidebar, without logging out.</p>
+      <table className="dashtable rolegrid">
+        <thead>
+          <tr><th>Member</th>{ROLE_IDS.map((r) => <th key={r} className="rolecol">{ROLES[r].label}</th>)}<th /></tr>
+        </thead>
         <tbody>
           {team.members.map((m) => (
             <tr key={m.id}>
-              <td>{m.email}{m.owner ? ' · owner' : ''}</td>
-              <td>
-                {m.owner ? <b>admin</b> : (
-                  <select value={m.role} disabled={!isAdmin} onChange={(e) => setMemberRole(m.id, e.target.value)}>
-                    {Object.keys(ROLES).map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                )}
-              </td>
+              <td>{m.email}{m.owner ? ' · you' : ''}</td>
+              {ROLE_IDS.map((r) => (
+                <td key={r} className="rolecol">
+                  <input type="checkbox" checked={(m.roles || []).includes(r)} disabled={!isAdmin}
+                    onChange={() => toggleRole(m.id, r)} />
+                </td>
+              ))}
               <td>{!m.owner && isAdmin && <button className="fs-linkbtn" onClick={() => remove(m.id)}>Remove</button>}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {isAdmin ? (
-        <div className="fs-onboardrow" style={{ maxWidth: 480, marginTop: 12 }}>
+      {isAdmin && (
+        <div className="fs-onboardrow" style={{ maxWidth: 460, marginTop: 12 }}>
           <input value={email} placeholder="teammate@company.com" onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addMember()} />
-          <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
-            {Object.keys(ROLES).map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <button onClick={addMember}>Add</button>
+          <button onClick={addMember}>Add person</button>
         </div>
-      ) : <p className="hint">Only admins manage the member list.</p>}
-      <p className="hint" style={{ marginTop: 10 }}>Members sign in with founder invites today (<code>node tools/invite.js their@email.com</code>); shared team workspaces with server-enforced roles are on the Team plan roadmap.</p>
+      )}
     </div>
   );
 }
 
-// Integrations — the n8n story: one inbound webhook + one scheduled playbook
-// endpoint, and n8n's connectors do the rest, self-hosted so nothing leaves
-// the user's machines. Real accounts mint a long-lived token here.
+// Module access: the matrix an org signs off on — which roles see which
+// parts of the product. Changing a row changes the sidebar immediately.
+function ModulesTab() {
+  const ws = useWS();
+  const isAdmin = can(ws, 'admin');
+  const matrix = ws.moduleAccess || DEFAULT_ROLE_MODULES;
+  const toggle = (role, mod) => mutate((w) => {
+    const base = w.moduleAccess || DEFAULT_ROLE_MODULES;
+    const have = base[role] || [];
+    const next = have.includes(mod) ? have.filter((x) => x !== mod) : [...have, mod];
+    return { ...w, moduleAccess: { ...base, [role]: next } };
+  });
+  return (
+    <div>
+      <h3 className="ws-h3">Module access by role</h3>
+      <p className="hint">Every capability in the product, grouped into modules. Tick which roles can open each one — the sidebar and routes follow this matrix live.</p>
+      <div className="modtablewrap">
+        <table className="dashtable rolegrid">
+          <thead>
+            <tr><th>Module</th>{ROLE_IDS.map((r) => <th key={r} className="rolecol">{ROLES[r].label}</th>)}</tr>
+          </thead>
+          <tbody>
+            {Object.entries(MODULES).map(([id, m]) => (
+              <tr key={id}>
+                <td>
+                  <b>{m.label}</b>
+                  <span className="modfns">{m.fns.join(' · ')}</span>
+                </td>
+                {ROLE_IDS.map((r) => (
+                  <td key={r} className="rolecol">
+                    <input type="checkbox" checked={(matrix[r] || []).includes(id)} disabled={!isAdmin}
+                      onChange={() => toggle(r, id)} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function IntegrationsTab() {
   const { session } = useWorkspace();
   const isUser = session?.mode === 'user';
@@ -449,6 +485,7 @@ export default function SettingsPage() {
           {tab === 'Model Hub' && <ModelsTab />}
           {tab === 'Integrations' && <IntegrationsTab />}
           {tab === 'Team & Roles' && <TeamTab />}
+          {tab === 'Module Access' && <ModulesTab />}
           {tab === 'Plan & Usage' && <PlanTab />}
           {tab === 'Appearance' && <AppearanceTab />}
           {tab === 'API & Webhooks' && <ApiTab />}

@@ -3,8 +3,21 @@
   "buildCommand": "npm run build:snapshot && npm run build --prefix journey-app",
   "outputDirectory": "journey-app/dist",
   "rewrites": [
-    { "source": "/api/core/:path*", "destination": "/api/core" },
-    { "source": "/api/ai/:path*", "destination": "/api/ai" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/api/core/:path*",
+      "destination": "/api/core"
+    },
+    {
+      "source": "/api/ai/:path*",
+      "destination": "/api/ai"
+    },
+    {
+      "source": "/api/edw/:path*",
+      "destination": "/api/edw"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ]
 }

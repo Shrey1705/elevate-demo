@@ -4,8 +4,8 @@
   "private": true,
   "description": "Zenith health insurance issuance demo: journey frontend + core policy system + AI feasibility portal",
   "scripts": {
-    "install:all": "npm --prefix core-service install && npm --prefix ai-service install && npm --prefix journey-app install",
-    "dev": "concurrently -n core,ai,web -c green,magenta,cyan \"cross-env PORT=4001 npm --prefix core-service start\" \"cross-env PORT=4002 npm --prefix ai-service start\" \"npm --prefix journey-app run dev\"",
+    "install:all": "npm --prefix core-service install && npm --prefix ai-service install && npm --prefix edw-service install && npm --prefix journey-app install",
+    "dev": "concurrently -n core,ai,edw,web -c green,magenta,yellow,cyan \"cross-env PORT=4001 npm --prefix core-service start\" \"cross-env PORT=4002 npm --prefix ai-service start\" \"cross-env PORT=4003 npm --prefix edw-service start\" \"npm --prefix journey-app run dev\"",
     "start": "npm run dev",
     "build:snapshot": "node scripts/build-ai-snapshot.js",
     "sim": "node sim/run.js",

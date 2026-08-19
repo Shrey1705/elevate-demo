@@ -51,11 +51,21 @@ function migrateState(s) {
     }
   }
   if (!s.team) s.team = seedTeam();
+  // Multi-role members: single `role` becomes a `roles` array; the workspace
+  // gains an active role that the UI switches without a logout.
+  for (const m of s.team.members || []) {
+    if (!m.roles) m.roles = [m.role || 'viewer'];
+  }
+  if (!s.team.activeRole) s.team.activeRole = (s.team.members || []).find((m) => m.owner)?.roles?.[0] || 'admin';
   // Decisions layer: back-fill the array on every project and the link field
   // on every BRD so pre-Decision workspaces keep working.
   for (const p of s.projects || []) {
     if (!p.decisions) p.decisions = [];
     for (const b of p.brds || []) if (b.decisionId === undefined) b.decisionId = null;
+    // Tracker / performance / review layers.
+    if (!p.tracker) p.tracker = emptyTracker();
+    if (!p.metrics) p.metrics = [];
+    if (!p.reviews) p.reviews = [];
   }
   return s;
 }
@@ -65,22 +75,196 @@ function migrateState(s) {
 // role. `viewAs` lets the owner preview the workspace through a lower role —
 // the same gates real members would hit (org-wide server enforcement lands
 // with team workspaces; the gating contract is defined here).
+// Org roles. `cap` maps each role onto the underlying capability level the
+// document gates already understand (admin > editor > viewer), so adding
+// org vocabulary doesn't fork the permission logic.
 export const ROLES = {
-  admin: 'Full control — settings, model hub, integrations, team, all documents.',
-  editor: 'Creates and edits documents, runs playbooks. No settings, connectors or team management.',
-  viewer: 'Read-only — sees every document and trace, changes nothing.'
+  admin: { label: 'Workspace Admin', cap: 'admin', desc: 'Full control — settings, connectors, team, module access, every document.' },
+  director: { label: 'Director / VP', cap: 'admin', desc: 'Portfolio oversight, approvals and performance. Sees everything across products.' },
+  pm: { label: 'Product Manager', cap: 'editor', desc: 'Owns decisions, specs, trackers and playbooks for their projects.' },
+  em: { label: 'Engineering Manager', cap: 'editor', desc: 'Delivery focus — board, releases, estimates and technical review.' },
+  engineer: { label: 'Engineer', cap: 'editor', desc: 'Stories, requirements and tests. Reads the decisions behind them.' },
+  qa: { label: 'QA', cap: 'editor', desc: 'Test cases and release readiness; reviews before go-live.' },
+  stakeholder: { label: 'Stakeholder', cap: 'viewer', desc: 'Reads published trackers, performance and status. Approves when asked.' },
+  viewer: { label: 'Viewer', cap: 'viewer', desc: 'Read-only across everything published to them.' },
+  // legacy value kept so older saved workspaces keep resolving
+  editor: { label: 'Editor', cap: 'editor', desc: 'Creates and edits documents.' }
 };
-const seedTeam = () => ({ members: [{ id: 'owner', email: 'you (owner)', role: 'admin', owner: true }], viewAs: null });
+export const ROLE_IDS = ['admin', 'director', 'pm', 'em', 'engineer', 'qa', 'stakeholder', 'viewer'];
 
-export const myRole = (ws) => ws.team?.viewAs || 'admin';
+// A person holds several roles and switches between them in the UI without
+// logging out — the way a real org works (a Director who is also the PM on
+// one product). `activeRole` is what the workspace renders as right now.
+const seedTeam = () => ({
+  members: [
+    { id: 'owner', email: 'you (owner)', roles: ['admin', 'director', 'pm'], owner: true },
+    { id: 'm-anita', email: 'anita.rao@zenith.example', roles: ['pm'] },
+    { id: 'm-vikram', email: 'vikram.n@zenith.example', roles: ['director'] },
+    { id: 'm-sana', email: 'sana.k@zenith.example', roles: ['em', 'engineer'] },
+    { id: 'm-dev', email: 'dev.patel@zenith.example', roles: ['engineer'] },
+    { id: 'm-qa', email: 'qa.desk@zenith.example', roles: ['qa'] },
+    { id: 'm-compliance', email: 'compliance@zenith.example', roles: ['stakeholder'] }
+  ],
+  activeRole: 'admin',
+  viewAs: null
+});
+
+export const myRoles = (ws) => (ws.team?.members || []).find((m) => m.owner)?.roles || ['admin'];
+export const myRole = (ws) => ws.team?.viewAs || ws.team?.activeRole || 'admin';
+export const roleCap = (role) => ROLES[role]?.cap || 'viewer';
+export const roleLabel = (role) => ROLES[role]?.label || role;
+
+// ---- modules ----
+// The product as an org would buy it: named modules, each with the
+// functionalities inside it, each exposable per role.
+export const MODULES = {
+  portfolio: { label: 'Portfolio & Tracker', glyph: 'target', fns: ['Go-live dashboard', 'Project trackers', 'Event timeline', 'Versions', 'Publish controls'] },
+  ask: { label: 'Ask (AI copilot)', glyph: 'message', fns: ['Chat over history', 'Grounded citations', 'Local model'] },
+  decisions: { label: 'Decisions', glyph: 'target', fns: ['Decision record', 'Evidence', 'Confidence', 'Review loop', 'Action items'] },
+  knowledge: { label: 'Knowledge', glyph: 'book', fns: ['Research', 'Library', 'Conversations', 'Inbox capture'] },
+  specs: { label: 'Specifications', glyph: 'clipboard', fns: ['BRD versions', 'PDN', 'Epics', 'Stories', 'Requirements', 'Tests'] },
+  execution: { label: 'Execution', glyph: 'checks', fns: ['Sprint board', 'Releases', 'Delivery pipeline', 'Definition of Done'] },
+  performance: { label: 'Performance', glyph: 'scatter', fns: ['North-star metrics', 'Trends', 'Portfolio roll-up'] },
+  reviews: { label: 'Review & Approval', glyph: 'check', fns: ['Route for review', 'Approve / request changes', 'Approval history'] },
+  playbooks: { label: 'Playbooks', glyph: 'play', fns: ['6 guided PM workflows'] },
+  insight: { label: 'Insight', glyph: 'network', fns: ['Signals', 'Knowledge graph', 'Semantic map'] },
+  data: { label: 'Connected Data (EDW)', glyph: 'archive', fns: ['Datalake tables', 'Live queries', 'Evidence from company data'] },
+  admin: { label: 'Administration', glyph: 'sliders', fns: ['Team & roles', 'Module access', 'Integrations', 'Model hub'] }
+};
+
+// Which modules each role sees. Editable in Settings → Module Access.
+export const DEFAULT_ROLE_MODULES = {
+  admin: Object.keys(MODULES),
+  director: ['portfolio', 'ask', 'decisions', 'performance', 'reviews', 'insight', 'data', 'knowledge'],
+  pm: ['portfolio', 'ask', 'decisions', 'knowledge', 'specs', 'execution', 'performance', 'reviews', 'playbooks', 'insight', 'data'],
+  em: ['portfolio', 'ask', 'decisions', 'knowledge', 'specs', 'execution', 'reviews', 'insight'],
+  engineer: ['portfolio', 'ask', 'knowledge', 'specs', 'execution', 'decisions'],
+  qa: ['portfolio', 'ask', 'specs', 'execution', 'reviews'],
+  stakeholder: ['portfolio', 'ask', 'performance', 'reviews'],
+  viewer: ['portfolio', 'ask'],
+  editor: ['portfolio', 'ask', 'decisions', 'knowledge', 'specs', 'execution', 'playbooks', 'insight']
+};
+export const roleModules = (ws) => (ws.moduleAccess || DEFAULT_ROLE_MODULES)[myRole(ws)] || [];
+export const canModule = (ws, moduleId) => roleModules(ws).includes(moduleId);
 // Gate actions: 'edit' (documents, board, releases), 'run' (playbooks),
 // 'create' (products/projects), 'admin' (settings, connectors, team, models).
 export function can(ws, action) {
-  const role = myRole(ws);
-  if (role === 'admin') return true;
-  if (role === 'editor') return action !== 'admin';
+  const cap = roleCap(myRole(ws));
+  if (cap === 'admin') return true;
+  if (cap === 'editor') return action !== 'admin';
   return false; // viewer
 }
+
+// ================  PROJECT TRACKER  ================
+// The module an org actually asks for first: what is this project, what has
+// happened on it, when does it go live. Events are the spine; everything
+// else (AI generation, versions, publishing) hangs off them.
+export const EVENT_TYPES = {
+  kickoff: { label: 'Kick-off', tint: '#0a84ff' },
+  milestone: { label: 'Milestone', tint: '#5e5ce6' },
+  decision: { label: 'Decision', tint: '#c9a227' },
+  risk: { label: 'Risk / blocker', tint: '#ff453a' },
+  approval: { label: 'Approval', tint: '#30b0c7' },
+  release: { label: 'Go-live', tint: '#34c759' },
+  review: { label: 'Review', tint: '#bf5af2' }
+};
+export const TRACKER_STATUS = ['on-track', 'at-risk', 'delayed', 'live', 'on-hold'];
+export const STATUS_LABEL = {
+  'on-track': 'On track', 'at-risk': 'At risk', 'delayed': 'Delayed', live: 'Live', 'on-hold': 'On hold'
+};
+
+export const emptyTracker = () => ({
+  description: '', status: 'on-track', goLive: '', owner: 'owner',
+  events: [], versions: [], visibility: 'private', sharedWith: []
+});
+export const trackerOf = (project) => project?.tracker || emptyTracker();
+export const sortedEvents = (project) =>
+  [...(trackerOf(project).events || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+export function updateTracker(ws, pid, patch) {
+  return {
+    ...ws,
+    projects: ws.projects.map((p) => (p.id !== pid ? p : { ...p, tracker: { ...emptyTracker(), ...(p.tracker || {}), ...patch } }))
+  };
+}
+export function addEvent(ws, pid, event) {
+  const t = trackerOf(ws.projects.find((p) => p.id === pid));
+  return updateTracker(ws, pid, { events: [...(t.events || []), { id: uid(), createdAt: now(), ...event }] });
+}
+export function updateEvent(ws, pid, eid, patch) {
+  const t = trackerOf(ws.projects.find((p) => p.id === pid));
+  return updateTracker(ws, pid, { events: (t.events || []).map((e) => (e.id === eid ? { ...e, ...patch } : e)) });
+}
+export function removeEvent(ws, pid, eid) {
+  const t = trackerOf(ws.projects.find((p) => p.id === pid));
+  return updateTracker(ws, pid, { events: (t.events || []).filter((e) => e.id !== eid) });
+}
+// Snapshot the tracker so "what did this look like at sign-off?" is answerable.
+export function snapshotTracker(ws, pid, note) {
+  const p = ws.projects.find((x) => x.id === pid);
+  const t = trackerOf(p);
+  const v = { v: (t.versions || []).length + 1, ts: now(), note: note || 'Tracker snapshot', description: t.description, status: t.status, goLive: t.goLive, events: JSON.parse(JSON.stringify(t.events || [])) };
+  return updateTracker(ws, pid, { versions: [...(t.versions || []), v] });
+}
+
+// Portfolio views. "Live" is a go-live date in the past; upcoming is ahead.
+export function portfolioRows(ws) {
+  return (ws.projects || []).map((p) => {
+    const t = trackerOf(p);
+    const rel = (p.releases || []).slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0];
+    const goLive = t.goLive || (rel?.date && rel.date !== '—' ? rel.date : '');
+    return {
+      project: p, tracker: t, goLive,
+      shipped: !!goLive && goLive <= todayISO(),
+      product: (ws.products || []).find((x) => x.id === p.productId)?.name || 'All products'
+    };
+  });
+}
+export const visibleToMe = (ws, row) =>
+  roleCap(myRole(ws)) === 'admin' || row.tracker.visibility === 'published' || myRole(ws) === 'pm';
+
+// ================  PERFORMANCE (north-star metrics)  ================
+export const emptyMetric = (patch = {}) => ({ id: uid(), name: 'New metric', unit: '%', target: 0, baseline: 0, source: 'manual', points: [], createdAt: now(), ...patch });
+export const metricsOf = (project) => project?.metrics || [];
+export function updateMetrics(ws, pid, metrics) {
+  return { ...ws, projects: ws.projects.map((p) => (p.id !== pid ? p : { ...p, metrics })) };
+}
+export const latestPoint = (m) => (m.points || []).slice().sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0];
+export function metricHealth(m) {
+  const last = latestPoint(m);
+  if (!last || !m.target) return 'unknown';
+  const pct = (last.value / m.target) * 100;
+  return pct >= 100 ? 'hit' : pct >= 75 ? 'near' : 'behind';
+}
+
+// ================  REVIEW & APPROVAL  ================
+export const REVIEW_STATE = { open: 'In review', approved: 'Approved', changes: 'Changes requested', cancelled: 'Cancelled' };
+export const reviewsOf = (project) => project?.reviews || [];
+export function addReview(ws, pid, review) {
+  return {
+    ...ws,
+    projects: ws.projects.map((p) => (p.id !== pid ? p : { ...p, reviews: [{ id: uid(), createdAt: now(), state: 'open', history: [], ...review }, ...(p.reviews || [])] }))
+  };
+}
+export function updateReview(ws, pid, rid, patch) {
+  return { ...ws, projects: ws.projects.map((p) => (p.id !== pid ? p : { ...p, reviews: (p.reviews || []).map((r) => (r.id === rid ? { ...r, ...patch } : r)) })) };
+}
+// Recording a verdict is append-only: the history is the audit trail, and the
+// overall state is derived from the reviewers, never set by hand.
+export function recordVerdict(ws, pid, rid, memberId, verdict, comment) {
+  const p = ws.projects.find((x) => x.id === pid);
+  const r = (p?.reviews || []).find((x) => x.id === rid);
+  if (!r) return ws;
+  const reviewers = r.reviewers.map((rv) => (rv.memberId === memberId ? { ...rv, status: verdict, at: now(), comment } : rv));
+  const history = [...(r.history || []), { at: now(), memberId, verdict, comment: comment || '' }];
+  const state = reviewers.some((rv) => rv.status === 'changes') ? 'changes'
+    : reviewers.every((rv) => rv.status === 'approved') ? 'approved' : 'open';
+  return updateReview(ws, pid, rid, { reviewers, history, state });
+}
+export const openReviewsFor = (ws, memberId) =>
+  (ws.projects || []).flatMap((p) => (p.reviews || [])
+    .filter((r) => r.state === 'open' && r.reviewers.some((rv) => rv.memberId === memberId && rv.status === 'pending'))
+    .map((r) => ({ review: r, project: p })));
 const persist = () => {
   try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch { /* ignore */ }
   schedulePush();
@@ -601,8 +785,144 @@ export function downloadText(filename, text) {
 function seedProducts() {
   return [
     { id: 'prod-retail', name: 'Retail Health Insurance', about: 'D2C individual and family-floater covers sold on the Zenith journey — quote, underwriting, payment, issuance.', createdAt: now() },
-    { id: 'prod-group', name: 'Group Health Insurance', about: 'Employer-sponsored group covers — corporate onboarding, member management, renewals.', createdAt: now() }
+    { id: 'prod-group', name: 'Group Health Insurance', about: 'Employer-sponsored group covers — corporate onboarding, member management, renewals.', createdAt: now() },
+    { id: 'prod-claims', name: 'Claims & Servicing', about: 'Claim intake, adjudication, cashless network and post-issuance servicing.', createdAt: now() },
+    { id: 'prod-platform', name: 'Digital Platform', about: 'Shared platform capabilities — identity, documents, data, fraud and integrations.', createdAt: now() }
   ];
+}
+
+// ---- portfolio seed ----
+// A believable book of work so the tracker opens on a real portfolio: four
+// delivered this quarter, five in flight. Each carries the tracker fields an
+// org actually reviews — description, status, go-live, event history, and
+// north-star metrics with a short trend.
+const day = (offset) => new Date(Date.now() + offset * 86400e3).toISOString().slice(0, 10);
+
+function portfolioSeed() {
+  const rows = [
+    {
+      id: 'proj-claims-instant', name: 'Instant Claim Settlement', productId: 'prod-claims', status: 'live', goLive: day(-97), owner: 'm-anita', visibility: 'published',
+      description: 'Auto-adjudicate low-value cashless claims under ₹25,000 within 60 seconds, with a rules-based fraud screen and a manual queue for exceptions.',
+      events: [
+        [-180, 'kickoff', 'Kick-off with Claims Ops and Actuarial'],
+        [-158, 'decision', 'Chose rules-based adjudication over ML for v1 — explainability required by compliance'],
+        [-131, 'milestone', 'Adjudication engine passed regression on 12 months of historical claims'],
+        [-112, 'review', 'Compliance and Underwriting sign-off completed'],
+        [-97, 'release', 'Released to production — 100% of eligible claims routed automatically']
+      ],
+      metrics: [
+        { name: 'Claims auto-settled', unit: '%', target: 60, baseline: 0, pts: [[-90, 22], [-60, 41], [-30, 55], [-5, 63]] },
+        { name: 'Median settlement time', unit: 'hrs', target: 1, baseline: 72, pts: [[-90, 26], [-60, 9], [-30, 3], [-5, 1]] }
+      ]
+    },
+    {
+      id: 'proj-wa-renewals', name: 'WhatsApp Renewal Reminders', productId: 'prod-retail', status: 'live', goLive: day(-59), owner: 'm-anita', visibility: 'published',
+      description: 'Renewal nudges over WhatsApp with a one-tap payment link, replacing the email-only reminder chain that customers were ignoring.',
+      events: [
+        [-140, 'kickoff', 'Renewals leakage analysis presented to Distribution'],
+        [-121, 'decision', 'WhatsApp Business API chosen over SMS — read rates 4x in pilot'],
+        [-88, 'risk', 'Template approval delayed 3 weeks by the provider'],
+        [-70, 'milestone', 'Pilot on 5,000 policies — 18% lift in on-time renewal'],
+        [-59, 'release', 'Rolled out to the full retail book']
+      ],
+      metrics: [
+        { name: 'On-time renewal rate', unit: '%', target: 80, baseline: 61, pts: [[-55, 66], [-40, 71], [-20, 76], [-3, 79]] }
+      ]
+    },
+    {
+      id: 'proj-group-onboard', name: 'Corporate Group Onboarding Portal', productId: 'prod-group', status: 'live', goLive: day(-40), owner: 'm-sana', visibility: 'published',
+      description: 'Self-serve portal for HR teams to upload member rosters, validate data and activate group cover without an account manager in the loop.',
+      events: [
+        [-165, 'kickoff', 'Three corporate clients interviewed on the current onboarding pain'],
+        [-140, 'milestone', 'Roster validation engine handles the top 6 HRMS export formats'],
+        [-96, 'decision', 'Deferred SSO to phase 2 — magic links unblock launch'],
+        [-52, 'approval', 'VP Group Business approved go-live'],
+        [-40, 'release', 'Live with 8 corporate clients onboarded in week one']
+      ],
+      metrics: [
+        { name: 'Onboarding time', unit: 'days', target: 2, baseline: 14, pts: [[-35, 9], [-25, 5], [-12, 3], [-2, 2]] },
+        { name: 'Rosters self-served', unit: '%', target: 75, baseline: 0, pts: [[-35, 31], [-25, 52], [-12, 64], [-2, 71]] }
+      ]
+    },
+    {
+      id: 'proj-cashless', name: 'Cashless Hospital Network Expansion', productId: 'prod-claims', status: 'live', goLive: day(-18), owner: 'm-vikram', visibility: 'published',
+      description: 'Add 1,200 hospitals across tier-2 cities to the cashless network, with automated empanelment checks and tariff ingestion.',
+      events: [
+        [-120, 'kickoff', 'Network gap analysis across 40 tier-2 cities'],
+        [-95, 'decision', 'Tariff ingestion automated rather than keyed by the network team'],
+        [-44, 'risk', 'Two hospital chains renegotiated tariffs mid-empanelment'],
+        [-18, 'release', 'Network live — 1,143 hospitals added']
+      ],
+      metrics: [
+        { name: 'Cashless coverage (tier-2)', unit: '%', target: 70, baseline: 38, pts: [[-15, 52], [-10, 61], [-4, 66]] }
+      ]
+    },
+    {
+      id: 'proj-emi', name: 'EMI & Payment Flexibility', productId: 'prod-retail', status: 'at-risk', goLive: day(27), owner: 'owner', visibility: 'published',
+      description: 'Offer interest-free monthly premium instalments alongside annual payment, including default handling that pauses rather than cancels cover.',
+      events: [
+        [-38, 'kickoff', 'Affordability drop-off identified in the quote funnel'],
+        [-31, 'decision', 'EMI approved over third-party financing — keeps the customer relationship in-house'],
+        [-16, 'milestone', 'Instalment schedule engine passing actuarial review'],
+        [-6, 'risk', 'Gateway mandate cap (₹15,000/instalment) blocks the top premium band — workaround under review']
+      ],
+      metrics: [
+        { name: 'Quote-to-policy conversion', unit: '%', target: 34, baseline: 27, pts: [[-30, 27], [-14, 28]] }
+      ]
+    },
+    {
+      id: 'proj-telemed', name: 'Telemedicine Add-on', productId: 'prod-retail', status: 'on-track', goLive: day(49), owner: 'm-anita', visibility: 'published',
+      description: 'Unlimited teleconsultation as an optional add-on, bundled with a partner network and priced from utilisation modelling.',
+      events: [
+        [-24, 'kickoff', 'Partner shortlist narrowed to two teleconsultation providers'],
+        [-9, 'decision', 'Priced as an add-on rather than bundled into base — protects the base premium']
+      ],
+      metrics: [
+        { name: 'Add-on attach rate', unit: '%', target: 25, baseline: 0, pts: [] }
+      ]
+    },
+    {
+      id: 'proj-doc-digital', name: 'Policy Document Digitisation', productId: 'prod-platform', status: 'delayed', goLive: day(43), owner: 'm-sana', visibility: 'published',
+      description: 'Replace PDF policy packs with a structured document service so policy data is queryable rather than trapped in attachments.',
+      events: [
+        [-88, 'kickoff', 'Document estate audit — 2.1M policy PDFs in scope'],
+        [-61, 'milestone', 'Extraction accuracy at 94% on the 2019+ corpus'],
+        [-27, 'risk', 'Pre-2015 scans below accuracy threshold; manual QA lane needed'],
+        [-12, 'decision', 'Scope cut to 2015+ documents for phase 1 — go-live moved out four weeks']
+      ],
+      metrics: [
+        { name: 'Documents structured', unit: '%', target: 90, baseline: 0, pts: [[-60, 12], [-30, 38], [-6, 51]] }
+      ]
+    },
+    {
+      id: 'proj-fraud', name: 'Fraud Detection Model v2', productId: 'prod-platform', status: 'on-hold', goLive: day(72), owner: 'm-vikram', visibility: 'private',
+      description: 'Second-generation fraud scoring on claims, moving from static rules to a supervised model with human review on the boundary.',
+      events: [
+        [-54, 'kickoff', 'Model v1 false-positive review with the SIU team'],
+        [-20, 'risk', 'Awaiting the labelled dataset from Claims — on hold until data lands']
+      ],
+      metrics: [
+        { name: 'False-positive rate', unit: '%', target: 8, baseline: 23, pts: [[-40, 23]] }
+      ]
+    }
+  ];
+
+  return rows.map((r) => ({
+    id: r.id, name: r.name, productId: r.productId, about: r.description, createdAt: now(),
+    tracker: {
+      description: r.description, status: r.status, goLive: r.goLive, owner: r.owner,
+      visibility: r.visibility, sharedWith: [],
+      events: r.events.map(([off, type, note]) => ({ id: uid(), date: day(off), type, note, createdAt: now(), source: 'seed' })),
+      versions: []
+    },
+    metrics: (r.metrics || []).map((m) => ({
+      id: uid(), name: m.name, unit: m.unit, target: m.target, baseline: m.baseline, source: 'manual', createdAt: now(),
+      points: (m.pts || []).map(([off, value]) => ({ date: day(off), value }))
+    })),
+    reviews: [],
+    folders: [], decisions: [], research: [], conversations: [], brds: [], pdns: [], epics: [], stories: [], frs: [], tests: [],
+    releases: r.status === 'live' ? [{ id: uid(), name: `R-${r.goLive.slice(0, 7)}`, date: r.goLive, env: 'production', storyIds: [], createdAt: now() }] : []
+  }));
 }
 
 function seedState() {
@@ -684,6 +1004,33 @@ function seedState() {
         id: 'proj-si', name: 'High-Value Cover Expansion', productId: 'prod-retail',
         about: 'Open a \u20b92 crore sum-insured band for HNI customers without breaking underwriting limits.',
         createdAt: now(),
+        tracker: {
+          description: 'Open a \u20b92 crore sum-insured band for HNI customers without breaking underwriting limits. Requires a certified actuarial rate and a medical-test grid for the new band.',
+          status: 'on-track', goLive: day(12), owner: 'owner', visibility: 'published', sharedWith: [],
+          events: [
+            { id: uid(), date: day(-64), type: 'kickoff', note: 'Lost-quote analysis showed 38 abandoned high-premium quotes in Q1', createdAt: now(), source: 'seed' },
+            { id: uid(), date: day(-51), type: 'decision', note: 'Approved the \u20b92 crore band, gated on actuarial rates (62% confidence)', createdAt: now(), source: 'seed' },
+            { id: uid(), date: day(-37), type: 'milestone', note: 'BRD v1 locked; PDN and delivery chain generated', createdAt: now(), source: 'seed' },
+            { id: uid(), date: day(-14), type: 'review', note: 'Underwriting and Reinsurance reviewed the medical-test grid', createdAt: now(), source: 'seed' },
+            { id: uid(), date: day(12), type: 'release', note: 'Planned go-live \u2014 R-2026.07 \u20b92 Cr band', createdAt: now(), source: 'seed' }
+          ],
+          versions: []
+        },
+        metrics: [
+          { id: uid(), name: 'New policies on \u20b92 Cr band', unit: '%', target: 5, baseline: 0, source: 'manual', createdAt: now(), points: [] },
+          { id: uid(), name: 'Mispriced issuances', unit: 'count', target: 0, baseline: 0, source: 'manual', createdAt: now(), points: [{ date: day(-10), value: 0 }] }
+        ],
+        reviews: [{
+          id: 'rev-si', createdAt: now(), state: 'open',
+          subject: 'BRD \u2014 Add a \u20b92 crore sum-insured band', subjectType: 'brd', subjectId: 'b-si',
+          requestedBy: 'owner', note: 'Rate table and UW grid need sign-off before the 30th.',
+          reviewers: [
+            { memberId: 'm-vikram', role: 'director', status: 'approved', at: now(), comment: 'Commercially sound. Watch the reinsurance treaty limit.' },
+            { memberId: 'm-compliance', role: 'stakeholder', status: 'pending' },
+            { memberId: 'm-sana', role: 'em', status: 'pending' }
+          ],
+          history: [{ at: now(), memberId: 'm-vikram', verdict: 'approved', comment: 'Commercially sound. Watch the reinsurance treaty limit.' }]
+        }],
         decisions: [siDecision],
         research: [
           { id: R1, title: 'HNI demand \u2014 lost-quote analysis', source: 'upload', sourceDetail: 'lost-quotes-q1.pdf', createdAt: now(), content: 'Quarterly review of abandoned high-premium quotes.\n\n38 quotes above \u20b91.5L annual premium abandoned at the sum-insured step this quarter; 31 of those users tried to select a higher band before dropping. Distribution confirms competitors quote \u20b92 crore retail bands to the same profiles.' },
@@ -734,6 +1081,16 @@ function seedState() {
         id: 'proj-kyc', name: 'Nominee & KYC Enhancements', productId: 'all',
         about: 'Compliance-driven improvements to nominee capture and proposer identity checks — applies to every product.',
         createdAt: now(),
+        tracker: {
+          description: 'Threshold-based PAN verification and mandatory nominee capture, driven by the regulator circular. Applies across every product line.',
+          status: 'on-track', goLive: day(35), owner: 'm-compliance', visibility: 'private', sharedWith: [],
+          events: [
+            { id: uid(), date: day(-20), type: 'kickoff', note: 'Regulator circular reviewed with Compliance', createdAt: now(), source: 'seed' },
+            { id: uid(), date: day(-8), type: 'milestone', note: 'Draft BRD created for threshold-based PAN verification', createdAt: now(), source: 'seed' }
+          ],
+          versions: []
+        },
+        metrics: [], reviews: [],
         decisions: [],
         research: [{ id: 'r-kyc', title: 'KYC circular — PAN capture thresholds', source: 'note', createdAt: now(), content: 'Regulator guidance requires PAN capture above a premium threshold. Current journey already collects PAN as mandatory; verify threshold logic is documented before drafting requirements.' }],
         conversations: [],
@@ -743,7 +1100,8 @@ function seedState() {
           versions: [{ v: 1, ts: now(), note: 'Initial draft', sections: { background: 'PAN is captured for all proposers today, but verification (against the issuer) only matters above the regulatory premium threshold.', requirements: ['Verify PAN with the issuer when annual premium exceeds the threshold'], stakeholders: 'Compliance', success: '' } }]
         }],
         pdns: [], epics: [], stories: [], frs: [], tests: [], releases: []
-      }
+      },
+      ...portfolioSeed()
     ]
   };
 }

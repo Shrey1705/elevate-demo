@@ -9,7 +9,7 @@ import { ai } from '../lib/api';
 import {
   useWS, mutate, resetWS, uid, now, findProject, findProduct, projectsOf,
   ALL_PRODUCT, DEFAULT_THEME, TYPES, ROUTE_OF, enableUserSync, disableUserSync, can, projectDueCount, projectOverdueActions,
-  underLimit, usageOf, PLAN_LIMITS, planOf
+  underLimit, usageOf, PLAN_LIMITS, planOf, ROLES, myRoles, myRole, roleLabel, canModule, openReviewsFor
 } from './workspace';
 import { I, TypeIcon } from './icons';
 import ChatHome from './ChatHome';
@@ -27,6 +27,11 @@ import PlaybooksPage from './PlaybooksPage';
 import BoardPage from './BoardPage';
 import DecisionsPage from './DecisionsPage';
 import SignalsPage from './SignalsPage';
+import PortfolioPage from './PortfolioPage';
+import TrackerPage from './TrackerPage';
+import PerformancePage from './PerformancePage';
+import ReviewsPage, { ReviewQueuePage } from './ReviewsPage';
+import DataPage from './DataPage';
 import CommandPalette from './CommandPalette';
 import SettingsPage from './SettingsPage';
 import AssistPanel from './AssistPanel';
@@ -102,6 +107,9 @@ export default function AiPortal() {
         <Routes>
           <Route path="/" element={<Shell />}>
             <Route index element={<ChatHome />} />
+            <Route path="portfolio" element={<PortfolioPage />} />
+            <Route path="reviews" element={<ReviewQueuePage />} />
+            <Route path="data" element={<DataPage />} />
             <Route path="board" element={<BoardPage />} />
             <Route path="signals" element={<SignalsPage />} />
             <Route path="graph" element={<GraphPage />} />
@@ -304,6 +312,9 @@ function ProjectRoutes() {
       <Route path="stories/:docId?" element={<ArtifactPage type="story" />} />
       <Route path="frs/:docId?" element={<ArtifactPage type="fr" />} />
       <Route path="tests/:docId?" element={<ArtifactPage type="test" />} />
+      <Route path="tracker" element={<TrackerPage />} />
+      <Route path="performance" element={<PerformancePage />} />
+      <Route path="reviews" element={<ReviewsPage />} />
       <Route path="decisions/:docId?" element={<DecisionsPage />} />
       <Route path="playbooks" element={<PlaybooksPage />} />
       <Route path="board" element={<BoardPage />} />
@@ -338,15 +349,20 @@ function Group({ id, label, action, children, small }) {
 
 // The project's own tree — nested under the active project row.
 const PROJECT_NAV = [
-  { g: 'decide', label: 'Decide', items: [
-    { to: 'decisions', glyph: 'target', label: 'Decisions', count: (p) => (p.decisions || []).length }
+  { g: 'track', label: 'Track', mod: 'portfolio', items: [
+    { to: 'tracker', glyph: 'target', label: 'Tracker', mod: 'portfolio' },
+    { to: 'performance', glyph: 'scatter', label: 'Performance', mod: 'performance' },
+    { to: 'reviews', glyph: 'check', label: 'Reviews', mod: 'reviews', count: (p) => (p.reviews || []).filter((r) => r.state === 'open').length }
   ] },
-  { g: 'knowledge', label: 'Knowledge', items: [
+  { g: 'decide', label: 'Decide', mod: 'decisions', items: [
+    { to: 'decisions', glyph: 'target', label: 'Decisions', mod: 'decisions', count: (p) => (p.decisions || []).length }
+  ] },
+  { g: 'knowledge', label: 'Knowledge', mod: 'knowledge', items: [
     { to: 'research', glyph: 'book', label: 'Research', count: (p) => p.research.length },
     { to: 'conversations', glyph: 'message', label: 'Conversations', count: (p) => p.conversations.length },
     { to: 'library', glyph: 'archive', label: 'Library' }
   ] },
-  { g: 'delivery', label: 'Delivery', items: [
+  { g: 'delivery', label: 'Delivery', mod: 'specs', items: [
     { to: 'brds', glyph: 'clipboard', label: 'BRDs', count: (p) => p.brds.length },
     { to: 'pdns', glyph: 'file', label: 'PDNs', count: (p) => p.pdns.length },
     { to: 'epics', glyph: 'layers', label: 'Epics', count: (p) => p.epics.length },
@@ -354,9 +370,9 @@ const PROJECT_NAV = [
     { to: 'frs', glyph: 'checks', label: 'Functional Reqs', count: (p) => p.frs.length },
     { to: 'tests', glyph: 'flask', label: 'Test Cases', count: (p) => p.tests.length }
   ] },
-  { g: 'project', label: 'Project', items: [
-    { to: 'playbooks', glyph: 'play', label: 'Playbooks' },
-    { to: 'releases', glyph: 'rocket', label: 'Releases', count: (p) => p.releases.length }
+  { g: 'project', label: 'Project', mod: 'execution', items: [
+    { to: 'playbooks', glyph: 'play', label: 'Playbooks', mod: 'playbooks' },
+    { to: 'releases', glyph: 'rocket', label: 'Releases', mod: 'execution', count: (p) => p.releases.length }
   ] }
 ];
 
@@ -412,9 +428,9 @@ function ProductNode({ product, activeProject, onClose }) {
               </button>
               {activeProject?.id === p.id && (
                 <div className="fs-tree">
-                  {PROJECT_NAV.map((g) => (
+                  {PROJECT_NAV.filter((g) => canModule(ws, g.mod)).map((g) => (
                     <Group key={g.g} id={g.g} label={g.label} small>
-                      {g.items.map((item) => (
+                      {g.items.filter((item) => canModule(ws, item.mod || g.mod)).map((item) => (
                         <NavLink key={item.to} to={`/ai/p/${p.id}/${item.to}`} onClick={onClose}
                           className={({ isActive }) => 'fs-link sub' + (isActive ? ' on' : '')}>
                           <I n={item.glyph} s={14} />
@@ -435,11 +451,30 @@ function ProductNode({ product, activeProject, onClose }) {
   );
 }
 
+// One person, several hats. Switching here re-renders the whole workspace
+// through that role's module access — no logout, which is how an org
+// actually works (a Director who also PMs one product).
+function RolePicker() {
+  const ws = useWS();
+  const roles = myRoles(ws);
+  const active = myRole(ws);
+  if (roles.length <= 1) return null;
+  return (
+    <div className="rolepicker">
+      <label>Working as</label>
+      <select value={active} onChange={(e) => mutate((w) => ({ ...w, team: { ...w.team, activeRole: e.target.value, viewAs: null } }))}>
+        {roles.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function Sidebar({ project, open, onClose }) {
   const ws = useWS();
   const nav = useNavigate();
   const { logout, session } = useWorkspace();
   const isDemo = session?.mode !== 'user';
+  const reviewCount = openReviewsFor(ws, 'owner').length;
   const [addingProduct, setAddingProduct] = useState(false);
   const [prodName, setProdName] = useState('');
 
@@ -474,17 +509,24 @@ function Sidebar({ project, open, onClose }) {
         </button>
 
         {/* Linear-style workspace views: cross-product, not nested in a project. */}
+        <RolePicker />
+
+        {/* Workspace views: cross-product, each gated by the module matrix. */}
         <Group id="wsviews" label="Workspace">
           {[
-            { to: '/ai/board', glyph: 'checks', label: 'Sprint Board' },
-            { to: '/ai/signals', glyph: 'scatter', label: 'Signals' },
-            { to: '/ai/graph', glyph: 'network', label: 'Knowledge Graph' },
-            { to: '/ai/map', glyph: 'globe', label: 'Semantic Map' }
-          ].map((v) => (
+            { to: '/ai/portfolio', glyph: 'target', label: 'Portfolio', mod: 'portfolio' },
+            { to: '/ai/reviews', glyph: 'check', label: 'Reviews', mod: 'reviews', badge: reviewCount },
+            { to: '/ai/board', glyph: 'checks', label: 'Sprint Board', mod: 'execution' },
+            { to: '/ai/data', glyph: 'archive', label: 'Connected Data', mod: 'data' },
+            { to: '/ai/signals', glyph: 'scatter', label: 'Signals', mod: 'insight' },
+            { to: '/ai/graph', glyph: 'network', label: 'Knowledge Graph', mod: 'insight' },
+            { to: '/ai/map', glyph: 'globe', label: 'Semantic Map', mod: 'insight' }
+          ].filter((v) => canModule(ws, v.mod)).map((v) => (
             <NavLink key={v.to} to={v.to} end onClick={onClose}
               className={({ isActive }) => 'fs-link' + (isActive ? ' on' : '')}>
               <I n={v.glyph} s={14} />
               <span className="fs-linklabel">{v.label}</span>
+              {v.badge ? <span className="fs-count">{v.badge}</span> : null}
             </NavLink>
           ))}
         </Group>
